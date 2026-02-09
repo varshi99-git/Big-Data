@@ -1,0 +1,9 @@
+
+Top 5 books similar to 10.txt:
++---------+----------+
+|file_name|similarity|
++---------+----------+
+|book2.txt|0.0       |
+|book1.txt|0.0       |
++---------+----------+
+
