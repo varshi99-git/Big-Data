@@ -1,5 +1,6 @@
 import java.io.IOException;
 import java.util.StringTokenizer;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
@@ -45,7 +46,16 @@ public class WordCount {
   }
 
   public static void main(String[] args) throws Exception {
+    
+    // 1. Capture Start Time
+    long startTime = System.currentTimeMillis();
+
     Configuration conf = new Configuration();
+    
+    // 2. Set Split Size (Experiment with this value!)
+    // Current value: 1MB (1048576 bytes)
+    conf.setLong("mapreduce.input.fileinputformat.split.maxsize", 1048576);
+
     Job job = Job.getInstance(conf, "word count");
     job.setJarByClass(WordCount.class);
     job.setMapperClass(TokenizerMapper.class);
@@ -55,7 +65,16 @@ public class WordCount {
     job.setOutputValueClass(IntWritable.class);
     FileInputFormat.addInputPath(job, new Path(args[0]));
     FileOutputFormat.setOutputPath(job, new Path(args[1]));
-    System.exit(job.waitForCompletion(true) ? 0 : 1);
+    
+    // Run the job and wait for it
+    boolean success = job.waitForCompletion(true);
+
+    // 3. Capture End Time and Print Result
+    long endTime = System.currentTimeMillis();
+    System.out.println("=================================================");
+    System.out.println("Total Execution Time: " + (endTime - startTime) + " milliseconds");
+    System.out.println("=================================================");
+
+    System.exit(success ? 0 : 1);
   }
 }
-// Submitted for Question 8
