@@ -1,6 +1,0 @@
-Title: The Adventures of Sherlock Holmes
-Release Date: March 1999
-Language: English
-Character set encoding: UTF-8
-
-This is the story of Sherlock Holmes...
