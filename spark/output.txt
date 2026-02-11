@@ -1,22 +1,25 @@
-+------------------------------------------------------------------+---------------------------------+-------------+--------+----------+
-|file_name                                                         |title                            |release_date |language|encoding  |
-+------------------------------------------------------------------+---------------------------------+-------------+--------+----------+
-|file:/mnt/c/Users/saiva/Final_Submission/spark/book_data/book1.txt|The Adventures of Sherlock Holmes|March 1999   |English |UTF-8     |
-|file:/mnt/c/Users/saiva/Final_Submission/spark/book_data/book2.txt|Don Quixote                      |December 2004|Spanish |ISO-8859-1|
-+------------------------------------------------------------------+---------------------------------+-------------+--------+----------+
-
-Books per Year:
-+----+-----+
-|year|count|
-+----+-----+
-|1999|    1|
-|2004|    1|
-+----+-----+
-
-Average Title Length:
-+------------------+
-|avg(length(title))|
-+------------------+
-|              22.0|
-+------------------+
-
+--------------------------------------------------
+Top 5 Influential Authors (Out-Degree, Window=5 yrs):
++----------------------+----------------+
+|influencer            |out_degree_score|
++----------------------+----------------+
+|James Joyce           |4               |
+|F. Scott Fitzgerald   |3               |
+|by F. Scott Fitzgerald|3               |
+|Virginia Woolf        |3               |
+|Ernest Hemingway      |2               |
++----------------------+----------------+
+only showing top 5 rows
+--------------------------------------------------
+Top 5 Influenced Authors (In-Degree, Window=5 yrs):
++----------------------+---------------+
+|influenced            |in_degree_score|
++----------------------+---------------+
+|Ernest Hemingway      |4              |
+|Virginia Woolf        |4              |
+|William Faulkner      |3              |
+|by F. Scott Fitzgerald|3              |
+|F. Scott Fitzgerald   |1              |
++----------------------+---------------+
+only showing top 5 rows
+--------------------------------------------------
