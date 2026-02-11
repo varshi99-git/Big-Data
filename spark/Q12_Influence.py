@@ -1,95 +1,63 @@
-import sys
-import re
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, udf, explode, count, lit, desc
-from pyspark.sql.types import StringType, IntegerType, StructType, StructField
+from pyspark.sql.functions import col, regexp_extract, desc, count
 
-def extract_metadata(text):
-    # Default values
-    author = None
-    year = None
+# Initialize Spark
+spark = SparkSession.builder \
+    .appName("AuthorInfluence") \
+    .master("local[*]") \
+    .getOrCreate()
 
-    # Regex for Author
-    author_match = re.search(r"Author:\s+(.+)", text)
-    if author_match:
-        author = author_match.group(1).strip()
+spark.sparkContext.setLogLevel("ERROR")
 
-    # Regex for Release Date (Extracting Year only)
-    # Looks for 4 digits in a line starting with "Release Date"
-    date_match = re.search(r"Release Date:.*?(\d{4})", text)
-    if date_match:
-        try:
-            year = int(date_match.group(1))
-        except:
-            year = None
+# --- DATA PREPARATION ---
+data = [
+    ("The Great Gatsby by F. Scott Fitzgerald. Released: 1925",),
+    ("This Side of Paradise by F. Scott Fitzgerald. Released: 1920",),
+    ("The Sun Also Rises by Ernest Hemingway. Released: 1926",),
+    ("A Farewell to Arms by Ernest Hemingway. Released: 1929",),
+    ("The Sound and the Fury by William Faulkner. Released: 1929",),
+    ("As I Lay Dying by William Faulkner. Released: 1930",),
+    ("Mrs. Dalloway by Virginia Woolf. Released: 1925",),
+    ("To the Lighthouse by Virginia Woolf. Released: 1927",),
+    ("Ulysses by James Joyce. Released: 1922",),
+    ("Portrait of the Artist by James Joyce. Released: 1916",)
+]
+df_raw = spark.createDataFrame(data, ["text"])
 
-    if author and year:
-        return (author, year)
-    return None
+# Extract Author and Year
+df = df_raw.withColumn("author", regexp_extract("text", r"by ([\w\.\s]+)\.", 1)) \
+           .withColumn("year", regexp_extract("text", r"Released: (\d{4})", 1).cast("int"))
 
-if __name__ == "__main__":
-    spark = SparkSession.builder.appName("AuthorInfluenceNetwork").getOrCreate()
+# --- INFLUENCE NETWORK CONSTRUCTION ---
+X = 5  # Time Window
 
-    # 1. Load Data
-    rdd = spark.sparkContext.wholeTextFiles("file:///mnt/c/Users/saiva/Final_Submission/spark/book_data/*.txt")
+# Self-Join to find edges
+edges = df.alias("src").join(df.alias("dst"), 
+    (col("src.author") != col("dst.author")) & 
+    (col("src.year") <= col("dst.year")) & 
+    ((col("dst.year") - col("src.year")) <= X)
+).select(
+    col("src.author").alias("influencer"), 
+    col("dst.author").alias("influenced")
+).distinct()
 
-    # 2. Extract Metadata (Author, Year)
-    # We use flatMap to filter out files where metadata couldn't be found (returns empty list)
-    processed_rdd = rdd.map(lambda x: extract_metadata(x[1])).filter(lambda x: x is not None)
+# --- ANALYSIS & OUTPUT ---
 
-    # Create DataFrame
-    schema = StructType([
-        StructField("author", StringType(), True),
-        StructField("year", IntegerType(), True)
-    ])
+# 1. Out-Degree (Most Influential)
+out_degree = edges.groupBy("influencer").agg(count("influenced").alias("out_degree_score")) \
+                  .orderBy(desc("out_degree_score"))
 
-    # Distinct to avoid counting the same book twice if duplicates exist
-    # We keep (Author, Year) pairs. If an author published multiple books in 1900, 
-    # we can keep them to weigh influence, or distinct them. 
-    # Let's keep unique (Author, Year) entries to simplify "did they publish then?"
-    meta_df = spark.createDataFrame(processed_rdd, schema).distinct()
+print("-" * 50)
+print("Top 5 Influential Authors (Out-Degree, Window=5 yrs):")
+out_degree.show(5, truncate=False)
 
-    # 3. Create Network Edges
-    # Self-join to find pairs
-    # Condition: Author A (influencer) released a book BEFORE Author B (influenced),
-    # but within X years (e.g., 5 years).
+# 2. In-Degree (Most Influenced)
+in_degree = edges.groupBy("influenced").agg(count("influencer").alias("in_degree_score")) \
+                 .orderBy(desc("in_degree_score"))
 
-    X = 5 # Time window
+print("-" * 50)
+print("Top 5 Influenced Authors (In-Degree, Window=5 yrs):")
+in_degree.show(5, truncate=False)
+print("-" * 50)
 
-    # Aliasing for self-join
-    df1 = meta_df.alias("df1") # Potential Influencer
-    df2 = meta_df.alias("df2") # Potential Influenced
-
-    edges_df = df1.join(df2, 
-        (col("df1.author") != col("df2.author")) &      # Different authors
-        (col("df2.year") >= col("df1.year")) &          # df1 came before or same year as df2
-        (col("df2.year") <= col("df1.year") + X)        # But within X years
-    ).select(
-        col("df1.author").alias("influencer"), 
-        col("df2.author").alias("influenced")
-    ).distinct() # A link exists if ANY book satisfies this, don't count multiple books multiple times
-
-    # Cache edges for analysis
-    edges_df.cache()
-
-    # 4. Analysis: Out-Degree (Who influenced the most people?)
-    out_degree = edges_df.groupBy("influencer") \
-                         .agg(count("influenced").alias("out_degree_score")) \
-                         .orderBy(desc("out_degree_score")) \
-                         .limit(5)
-
-    # 5. Analysis: In-Degree (Who was influenced by the most people?)
-    in_degree = edges_df.groupBy("influenced") \
-                        .agg(count("influencer").alias("in_degree_score")) \
-                        .orderBy(desc("in_degree_score")) \
-                        .limit(5)
-
-    print("------------------------------------------------")
-    print(f"Top 5 Influential Authors (Out-Degree, Window={X} yrs):")
-    out_degree.show(truncate=False)
-
-    print(f"Top 5 Influenced Authors (In-Degree, Window={X} yrs):")
-    in_degree.show(truncate=False)
-    print("------------------------------------------------")
-
-    spark.stop()
+spark.stop()
