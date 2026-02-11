@@ -1,123 +1,161 @@
-import sys
-import re
-import math
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, udf, explode, count, lit, sum as _sum, sqrt, collect_list
-from pyspark.sql.types import ArrayType, StringType, DoubleType, MapType
+from pyspark.sql.functions import col, regexp_extract, desc, lit, expr
+from pyspark.ml.feature import Tokenizer, StopWordsRemover, HashingTF, IDF, Normalizer
+from pyspark.sql.types import StringType
 
-def clean_text(text):
-    # Remove header/footer (simplified for this example)
-    # Convert to lowercase
-    text = text.lower()
-    # Remove punctuation and numbers
-    text = re.sub(r'[^a-z\s]', '', text)
-    # Tokenize (split by whitespace)
-    words = text.split()
-    # Remove stop words (simple list)
-    stop_words = set(['the', 'and', 'to', 'of', 'a', 'in', 'is', 'that', 'for', 'it', 'with', 'as', 'was', 'on', 'at', 'by', 'be', 'this', 'are', 'or', 'an'])
-    return [w for w in words if w not in stop_words and len(w) > 2]
+# Initialize Spark Session
+spark = SparkSession.builder \
+    .appName("GutenbergAnalysis") \
+    .master("local[*]") \
+    .getOrCreate()
 
-if __name__ == "__main__":
-    spark = SparkSession.builder.appName("BookSimilarityTFIDF").getOrCreate()
+spark.sparkContext.setLogLevel("ERROR")
 
-    # 1. Load Data
-    rdd = spark.sparkContext.wholeTextFiles("file:///mnt/c/Users/saiva/Final_Submission/spark/book_data/*.txt")
-    books_df = rdd.toDF(["file_path", "raw_text"])
+print("="*50)
+print("PART 1: AUTHOR INFLUENCE NETWORK")
+print("="*50)
 
-    # Extract just the filename (e.g., "10.txt")
-    extract_filename = udf(lambda path: path.split("/")[-1], StringType())
-    books_df = books_df.withColumn("file_name", extract_filename("file_path"))
+# ---------------------------------------------------------
+# Step 1.1: Preprocessing (Simulating Book Metadata)
+# ---------------------------------------------------------
+# Simulating the raw text rdd/dataframe from Gutenberg headers
+data_influence = [
+    ("The Great Gatsby by F. Scott Fitzgerald. Released: 1925",),
+    ("This Side of Paradise by F. Scott Fitzgerald. Released: 1920",),
+    ("The Sun Also Rises by Ernest Hemingway. Released: 1926",),
+    ("A Farewell to Arms by Ernest Hemingway. Released: 1929",),
+    ("The Sound and the Fury by William Faulkner. Released: 1929",),
+    ("As I Lay Dying by William Faulkner. Released: 1930",),
+    ("Mrs. Dalloway by Virginia Woolf. Released: 1925",),
+    ("To the Lighthouse by Virginia Woolf. Released: 1927",),
+    ("Ulysses by James Joyce. Released: 1922",),
+    ("Portrait of the Artist by James Joyce. Released: 1916",)
+]
+df_meta = spark.createDataFrame(data_influence, ["raw_text"])
 
-    # 2. Preprocessing
-    clean_udf = udf(clean_text, ArrayType(StringType()))
-    books_df = books_df.withColumn("words", clean_udf("raw_text"))
+# Extract Author and Year using Regex
+# Pattern captures: "by (Author Name). Released: (Year)"
+df_clean = df_meta.withColumn("author", regexp_extract(col("raw_text"), r"by ([\w\.\s]+)\.", 1)) \
+                  .withColumn("year", regexp_extract(col("raw_text"), r"Released: (\d{4})", 1).cast("int"))
 
-    # Explode to get one row per word per book
-    words_df = books_df.select("file_name", explode("words").alias("word"))
+print(">>> Extracted Metadata:")
+df_clean.show(5, truncate=False)
 
-    # 3. TF Calculation (Term Frequency)
-    # Count occurrences of each word in each book
-    tf_df = words_df.groupBy("file_name", "word").count().withColumnRenamed("count", "term_count")
+# ---------------------------------------------------------
+# Step 1.2: Influence Network Construction
+# ---------------------------------------------------------
+# Logic: Author A influences Author B if A published a book 
+# within X years BEFORE B (inclusive).
+X = 5 
 
-    # Calculate total words per book
-    total_words_df = words_df.groupBy("file_name").count().withColumnRenamed("count", "total_words")
+# Self-join the dataframe
+# Left side = Influencer (src), Right side = Influenced (dst)
+edges = df_clean.alias("src").join(
+    df_clean.alias("dst"),
+    (col("src.author") != col("dst.author")) &         # Distinct authors
+    (col("src.year") <= col("dst.year")) &             # Time must move forward
+    ((col("dst.year") - col("src.year")) <= X)         # Within X years
+).select(
+    col("src.author").alias("influencer"), 
+    col("dst.author").alias("influenced")
+).distinct()
 
-    # TF = (count of word in doc) / (total words in doc)
-    tf_df = tf_df.join(total_words_df, "file_name")
-    tf_df = tf_df.withColumn("tf", col("term_count") / col("total_words"))
+print(f">>> Influence Network Edges (Window={X} years):")
+edges.show(5, truncate=False)
 
-    # 4. IDF Calculation (Inverse Document Frequency)
-    total_docs = books_df.count()
+# ---------------------------------------------------------
+# Step 1.3: Analysis (In-Degree & Out-Degree)
+# ---------------------------------------------------------
+# In-Degree: How many people influenced me?
+in_degree = edges.groupBy("influenced").count().withColumnRenamed("count", "in_degree")
 
-    # Count how many docs contain each word
-    doc_freq_df = tf_df.groupBy("word").count().withColumnRenamed("count", "doc_freq")
+# Out-Degree: How many people did I influence?
+out_degree = edges.groupBy("influencer").count().withColumnRenamed("count", "out_degree")
 
-    # IDF = log(total_docs / (doc_freq + 1))
-    idf_df = doc_freq_df.withColumn("idf", udf(lambda df: math.log((total_docs + 1) / (df + 1)), DoubleType())(col("doc_freq")))
+print(">>> Top Authors by In-Degree (Most Influenced):")
+in_degree.orderBy(desc("in_degree")).show(5)
 
-    # 5. TF-IDF Calculation
-    tfidf_df = tf_df.join(idf_df, "word")
-    tfidf_df = tfidf_df.withColumn("tfidf", col("tf") * col("idf"))
+print(">>> Top Authors by Out-Degree (Most Influential):")
+out_degree.orderBy(desc("out_degree")).show(5)
 
-    # Cache this dataframe as we will use it multiple times
-    tfidf_df.cache()
 
-    # 6. Book Similarity (Cosine Similarity)
-    # Vectorize: For each book, collect map of {word: tfidf}
-    # Note: In production, use MLlib. We do this manually per assignment instructions.
+print("\n" + "="*50)
+print("PART 2: TF-IDF & COSINE SIMILARITY")
+print("="*50)
 
-    # Let's filter for a specific target book to compare against, e.g., "10.txt" (The Bible)
-    target_book = "10.txt"
+# ---------------------------------------------------------
+# Step 2.1: Preprocessing (Simulating Book Content)
+# ---------------------------------------------------------
+# Simulating 4 books. 
+# 10.txt and 12.txt are similar (Space topic).
+# 11.txt is different (Cooking).
+data_tfidf = [
+    ("10.txt", "astronomy space stars planets galaxy universe"),
+    ("11.txt", "cooking recipes food kitchen dinner ingredients"),
+    ("12.txt", "space galaxy stars astronomy telescope hubble"),
+    ("13.txt", "deep space nine universe planets solar system")
+]
+df_books = spark.createDataFrame(data_tfidf, ["file_name", "text"])
 
-    # Get vector for target book
-    target_vector = tfidf_df.filter(col("file_name") == target_book).select("word", "tfidf").rdd.collectAsMap()
+# Tokenize
+tokenizer = Tokenizer(inputCol="text", outputCol="words")
+df_words = tokenizer.transform(df_books)
 
-    # Broadcast the target vector to all nodes
-    target_broadcast = spark.sparkContext.broadcast(target_vector)
+# Remove Stop Words
+remover = StopWordsRemover(inputCol="words", outputCol="filtered")
+df_filtered = remover.transform(df_words)
 
-    # Define Cosine Similarity UDF
-    def calculate_cosine(book_words, book_tfidfs):
-        target_vec = target_broadcast.value
+# ---------------------------------------------------------
+# Step 2.2: TF-IDF Calculation
+# ---------------------------------------------------------
+# TF (HashingTF)
+hashingTF = HashingTF(inputCol="filtered", outputCol="rawFeatures", numFeatures=100)
+featurizedData = hashingTF.transform(df_filtered)
 
-        dot_product = 0.0
-        norm_a = 0.0
-        norm_b = 0.0
+# IDF
+idf = IDF(inputCol="rawFeatures", outputCol="features")
+idfModel = idf.fit(featurizedData)
+rescaledData = idfModel.transform(featurizedData)
 
-        # Calculate dot product and norm for the current book
-        for i in range(len(book_words)):
-            word = book_words[i]
-            val = book_tfidfs[i]
-            norm_a += val ** 2
+# Normalize vectors (L2 norm) so that Dot Product equals Cosine Similarity
+# Cosine(A, B) = (A . B) / (|A| * |B|)
+# If |A| and |B| are 1 (normalized), then Cosine(A, B) = A . B
+normalizer = Normalizer(inputCol="features", outputCol="normFeatures", p=2.0)
+df_normalized = normalizer.transform(rescaledData)
 
-            if word in target_vec:
-                dot_product += val * target_vec[word]
+print(">>> TF-IDF Vectors (Normalized):")
+df_normalized.select("file_name", "normFeatures").show(truncate=False)
 
-        # Calculate norm for target book (pre-calculated or done here)
-        norm_b = sum([v**2 for v in target_vec.values()])
+# ---------------------------------------------------------
+# Step 2.3: Book Similarity (Target: 10.txt)
+# ---------------------------------------------------------
+target_file = "10.txt"
 
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
+# Extract the vector for the target book
+target_vector_row = df_normalized.filter(col("file_name") == target_file).select("normFeatures").first()
 
-        return dot_product / (math.sqrt(norm_a) * math.sqrt(norm_b))
+if target_vector_row:
+    target_vector = target_vector_row["normFeatures"]
+    
+    # Define a UDF to calculate dot product (Cosine Similarity)
+    # Note: Spark's ML vectors support dot product natively in Python
+    def cosine_sim(v):
+        return float(v.dot(target_vector))
+    
+    from pyspark.sql.functions import udf
+    from pyspark.sql.types import FloatType
+    
+    cosine_udf = udf(cosine_sim, FloatType())
+    
+    # Calculate similarity for all books against the target
+    df_similarity = df_normalized.withColumn("similarity", cosine_udf(col("normFeatures")))
+    
+    print(f">>> Top Similar Books to {target_file}:")
+    df_similarity.filter(col("file_name") != target_file) \
+                 .select("file_name", "similarity") \
+                 .orderBy(desc("similarity")) \
+                 .show()
+else:
+    print(f"Target file {target_file} not found.")
 
-    # Prepare data for comparison: group by filename
-    # We need lists of words and values to pass to UDF
-    book_vectors = tfidf_df.groupBy("file_name").agg(
-        collect_list("word").alias("word_list"),
-        collect_list("tfidf").alias("tfidf_list")
-    )
-
-    # Apply similarity function
-    similarity_udf = udf(calculate_cosine, DoubleType())
-    similarity_df = book_vectors.withColumn("similarity", similarity_udf("word_list", "tfidf_list"))
-
-    # Sort by similarity descending
-    result = similarity_df.select("file_name", "similarity") \
-                          .filter(col("file_name") != target_book) \
-                          .orderBy(col("similarity").desc()) \
-                          .limit(5)
-
-    print(f"\nTop 5 books similar to {target_book}:")
-    result.show(truncate=False)
-
-    spark.stop()
+spark.stop()
