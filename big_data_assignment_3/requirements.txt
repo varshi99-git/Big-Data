@@ -1,0 +1,9 @@
+pandas
+numpy
+scikit-learn
+tensorflow
+shap
+scikit-surprise
+matplotlib
+scipy
+pyspark
