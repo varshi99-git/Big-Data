@@ -1,0 +1,6 @@
+Title: Don Quixote
+Release Date: December 2004
+Language: Spanish
+Character set encoding: ISO-8859-1
+
+En un lugar de la Mancha...
